@@ -1,0 +1,54 @@
+name: crossval-orders
+
+services:
+  mongodb:
+    image: mongo:8.0.28-noble
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "${MONGODB_PORT:-27017}:27017"
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--eval",
+          "quit(db.adminCommand({ ping: 1 }).ok ? 0 : 1)",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  mongo-init:
+    image: mongo:8.0.28-noble
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        mongosh --host mongodb:27017 --quiet --eval '
+          try {
+            const status = rs.status();
+            if (!status.ok) quit(1);
+          } catch (error) {
+            const result = rs.initiate({
+              _id: "rs0",
+              members: [{ _id: 0, host: "mongodb:27017" }]
+            });
+            if (!result.ok) quit(1);
+          }
+        '
+        until mongosh --host mongodb:27017 --quiet --eval '
+          quit(db.hello().isWritablePrimary ? 0 : 1)
+        '; do
+          sleep 1
+        done
+
+volumes:
+  mongodb-data:
