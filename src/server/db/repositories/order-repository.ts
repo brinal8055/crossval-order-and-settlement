@@ -13,6 +13,13 @@ export interface OrderListFilter {
   limit: number;
 }
 
+export interface OrderListSummary {
+  outstandingCents: bigint;
+  overdueCount: number;
+  partiallyPaidCount: number;
+  paidCount: number;
+}
+
 export interface OrderPatch {
   customer?: string;
   dueDate?: string;
@@ -40,6 +47,7 @@ export class OrderRepository {
   async listForUser(filter: OrderListFilter): Promise<{
     orders: OrderDocument[];
     total: number;
+    summary: OrderListSummary;
   }> {
     const query: Filter<OrderDocument> = { userId: filter.userId };
     if (filter.status === "paid") query.amountDueCents = 0n;
@@ -58,7 +66,7 @@ export class OrderRepository {
       query.paymentCount = { $gt: 0 };
     }
 
-    const [documents, total] = await Promise.all([
+    const [documents, total, summaryRows] = await Promise.all([
       this.collection
         .find(query)
         .sort({ createdAt: -1, _id: -1 })
@@ -66,9 +74,68 @@ export class OrderRepository {
         .limit(filter.limit)
         .toArray(),
       this.collection.countDocuments(query),
+      this.collection
+        .aggregate<{
+          _id: null;
+          outstandingCents: bigint;
+          overdueCount: number;
+          partiallyPaidCount: number;
+          paidCount: number;
+        }>([
+          { $match: query },
+          {
+            $group: {
+              _id: null,
+              outstandingCents: { $sum: "$amountDueCents" },
+              overdueCount: {
+                $sum: {
+                  $cond: [
+                    {
+                      $and: [
+                        { $gt: ["$amountDueCents", 0n] },
+                        { $lt: ["$dueDate", filter.today] },
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              partiallyPaidCount: {
+                $sum: {
+                  $cond: [
+                    {
+                      $and: [
+                        { $gt: ["$amountDueCents", 0n] },
+                        { $gte: ["$dueDate", filter.today] },
+                        { $gt: ["$paymentCount", 0] },
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              paidCount: {
+                $sum: { $cond: [{ $eq: ["$amountDueCents", 0n] }, 1, 0] },
+              },
+            },
+          },
+        ])
+        .toArray(),
     ]);
 
-    return { orders: documents.map(mapOrderDocument), total };
+    const summary = summaryRows[0];
+    return {
+      orders: documents.map(mapOrderDocument),
+      total,
+      summary: {
+        outstandingCents: summary?.outstandingCents ?? 0n,
+        overdueCount: summary?.overdueCount ?? 0,
+        partiallyPaidCount: summary?.partiallyPaidCount ?? 0,
+        paidCount: summary?.paidCount ?? 0,
+      },
+    };
   }
 
   async updateBeforePayment(

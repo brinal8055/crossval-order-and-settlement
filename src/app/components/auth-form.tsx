@@ -37,9 +37,13 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       });
       if (!response.ok) {
         const body = (await response.json().catch(() => null)) as {
-          error?: { code?: string; message?: string };
+          error?: { code?: string; message?: string; details?: Record<string, string> };
         } | null;
         const code = body?.error?.code;
+        const details = Object.entries(body?.error?.details ?? {});
+        const detailMessage = details.length > 0
+          ? ` ${details.map(([field, detail]) => `${field}: ${detail}`).join(" · ")}`
+          : "";
         setError(
           code === "EMAIL_ALREADY_REGISTERED"
             ? "That email is already registered. Try signing in instead."
@@ -47,7 +51,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
               ? isSignup
                 ? "Check your email address and make sure your password is at least 8 characters."
                 : "Enter a valid email address."
-            : body?.error?.message ?? "Those credentials could not be accepted.",
+            : `${body?.error?.message ?? "Those credentials could not be accepted."}${detailMessage}`,
         );
         return;
       }

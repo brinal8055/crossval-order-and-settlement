@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { DomainError } from "@/domain/errors";
+import { formatUtcDate } from "@/domain/dates";
 import { isSameOrigin } from "@/server/auth/security";
 import { getSettlementContext } from "@/server/settlements/http";
 import {
@@ -60,6 +61,7 @@ export async function POST(request: Request, context: RouteContext) {
   }
 
   try {
+    const recordedAt = new Date();
     const result = await settlePayment(
       auth.client,
       auth.userId,
@@ -67,8 +69,8 @@ export async function POST(request: Request, context: RouteContext) {
       idempotencyKey,
       parsed.data,
       { orders: auth.orderRepository, payments: auth.paymentRepository },
-      new Date().toISOString().slice(0, 10),
-      new Date(),
+      formatUtcDate(recordedAt),
+      recordedAt,
     );
     const response = NextResponse.json(
       { payment: toPaymentDto(result.payment) },

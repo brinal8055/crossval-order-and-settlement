@@ -25,7 +25,7 @@
     "db:init": "tsx --env-file-if-exists=.env.local scripts/db-init.ts",
     "db:up": "docker compose up -d --wait mongodb && docker compose run --rm mongo-init",
     "db:down": "docker compose down",
-    "docker:build": "docker build --tag crossval-orders:local .",
+    "docker:build": "docker build --platform linux/arm64 --tag crossval-orders:local .",
     "deploy:smoke": "sh scripts/deploy-smoke.sh"
   },
   "dependencies": {

@@ -11,9 +11,11 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       APP_ORIGIN: http://localhost:3000
+      MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0&directConnection=true
+      MONGODB_DATABASE: crossval_orders_ci_test
       MONGODB_TEST_URI: mongodb://localhost:27017/?replicaSet=rs0&directConnection=true
       MONGODB_TEST_DATABASE: crossval_orders_ci_test
       SESSION_TTL_SECONDS: 604800
@@ -48,9 +50,144 @@ jobs:
       - name: Production build
         run: npm run build
 
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser smoke test
+        run: |
+          set -euo pipefail
+          npm run start > /tmp/crossval-next.log 2>&1 &
+          server_pid=$!
+          cleanup() { kill "$server_pid" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:3000/ > /dev/null; then
+              break
+            fi
+            if [ "$attempt" = "30" ]; then
+              cat /tmp/crossval-next.log
+              exit 1
+            fi
+            sleep 1
+          done
+          E2E_BASE_URL=http://localhost:3000 npm run test:e2e
+
+      - name: Set up QEMU for ARM64 image verification
+        uses: docker/setup-qemu-action@v3
+
       - name: Docker build
         run: npm run docker:build
 
       - name: Stop MongoDB
         if: always()
         run: npm run db:down
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+      AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'crossval-orders' }}
+      ECS_SERVICE_ARN: ${{ vars.ECS_SERVICE_ARN }}
+      DEPLOY_BASE_URL: ${{ vars.DEPLOY_BASE_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate deployment configuration
+        run: |
+          set -euo pipefail
+          for variable_name in AWS_ROLE_TO_ASSUME ECS_SERVICE_ARN DEPLOY_BASE_URL; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::GitHub repository variable $variable_name is required for deployment."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          role-session-name: github-actions-${{ github.run_id }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push immutable ARM64 image
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image_tag="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker buildx build \
+            --platform linux/arm64 \
+            --tag "$image_tag" \
+            --push \
+            .
+          image_digest="$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text \
+            --region "$AWS_REGION")"
+          if [ -z "$image_digest" ] || [ "$image_digest" = "None" ]; then
+            echo "::error::The pushed ECR image digest could not be resolved."
+            exit 1
+          fi
+          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY@$image_digest" >> "$GITHUB_OUTPUT"
+          echo "Pushed $ECR_REGISTRY/$ECR_REPOSITORY@$image_digest"
+
+      - name: Update ECS Express Mode service
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+        run: |
+          set -euo pipefail
+          service_json="$(mktemp)"
+          trap 'rm -f "$service_json"' EXIT
+          aws ecs describe-express-gateway-service \
+            --service-arn "$ECS_SERVICE_ARN" \
+            --region "$AWS_REGION" \
+            --output json > "$service_json"
+
+          primary_container="$(jq -c \
+            --arg image "$IMAGE_URI" \
+            '.service as $service
+             | (([$service.activeConfigurations[]
+                  | select(.serviceRevisionArn == $service.currentDeployment)
+                  | .primaryContainer][0])
+                // $service.activeConfigurations[0].primaryContainer)
+             | .image = $image' \
+            "$service_json")"
+          if [ -z "$primary_container" ] || [ "$primary_container" = "null" ]; then
+            echo "::error::Unable to find the current ECS Express primary container configuration."
+            exit 1
+          fi
+
+          aws ecs update-express-gateway-service \
+            --service-arn "$ECS_SERVICE_ARN" \
+            --primary-container "$primary_container" \
+            --health-check-path /api/health/ready \
+            --monitor-resources DEPLOYMENT \
+            --monitor-mode TEXT-ONLY \
+            --region "$AWS_REGION"
+
+      - name: Verify deployed health endpoints
+        env:
+          BASE_URL: ${{ env.DEPLOY_BASE_URL }}
+        run: npm run deploy:smoke

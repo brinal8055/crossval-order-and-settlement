@@ -8,7 +8,7 @@ type Status = "pending" | "partially_paid" | "paid" | "overdue";
 type Line = { id: string; description: string; quantity: number; unitPrice: string; lineTotal: string };
 type Order = { id: string; customer: string; dueDate: string; currency: string; lines: Line[]; total: string; amountPaid: string; amountDue: string; status: Status; version: number; editable: boolean; createdAt: string; updatedAt: string };
 type Payment = { id: string; sequence: number; amount: string; paymentDate: string; recordedAt: string; note?: string; balanceBefore: string; balanceAfter: string };
-type ErrorBody = { error?: { code?: string; message?: string; details?: { maximumAllowed?: string } } };
+type ErrorBody = { error?: { code?: string; message?: string; details?: Record<string, string> } };
 
 const labels: Record<Status, string> = { pending: "Pending", partially_paid: "Partially paid", paid: "Paid", overdue: "Overdue" };
 const styles: Record<Status, string> = { pending: "bg-[#f2f4f3] text-[#53615b]", partially_paid: "bg-[#fff5dc] text-[#8b5e00]", paid: "bg-[#e7f3ed] text-[#176044]", overdue: "bg-[#fff0ee] text-[#b42318]" };
@@ -17,7 +17,11 @@ function Badge({ status }: { status: Status }) { return <span className={`inline
 
 async function readError(response: Response, fallback: string) {
   const body = await response.json().catch(() => null) as ErrorBody | null;
-  return body?.error?.message ?? fallback;
+  const message = body?.error?.message ?? fallback;
+  const details = Object.entries(body?.error?.details ?? {});
+  return details.length > 0
+    ? `${message} ${details.map(([field, detail]) => `${field}: ${detail}`).join(" · ")}`
+    : message;
 }
 
 function PaymentForm({ order, onSettled }: { order: Order; onSettled: () => void }) {
@@ -36,11 +40,19 @@ function PaymentForm({ order, onSettled }: { order: Order; onSettled: () => void
     if (!samePayload) setAttempt({ key, payload });
     try {
       const response = await fetch(`/api/orders/${order.id}/payments`, { method: "POST", credentials: "include", headers: { "content-type": "application/json", origin: window.location.origin, "idempotency-key": key }, body: JSON.stringify(payload) });
-      if (!response.ok) { const body = await response.json().catch(() => null) as ErrorBody | null; setError(body?.error?.code === "OVERPAYMENT" ? `Payment exceeds the outstanding balance. Maximum allowed: $${body.error.details?.maximumAllowed ?? order.amountDue}.` : body?.error?.message ?? "Payment could not be recorded."); return; }
+      if (!response.ok) { const body = await response.json().catch(() => null) as ErrorBody | null; const details = body?.error?.details ?? {}; setError(body?.error?.code === "OVERPAYMENT" ? `Payment exceeds the outstanding balance. Maximum allowed: $${details.maximumAllowed ?? order.amountDue}.` : readErrorBody(body, "Payment could not be recorded.")); return; }
       setAttempt(null); setError(""); onSettled();
     } catch { setError("The connection was interrupted. Press retry to safely resend the same payment."); } finally { setBusy(false); }
   }
   return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-sm"><div className="flex items-start justify-between gap-4"><div><h2 className="text-lg font-semibold">Record settlement</h2><p className="mt-1 text-sm text-[var(--muted)]">Outstanding: <strong className="text-[var(--foreground)]">${order.amountDue}</strong></p></div><span className="rounded-full bg-[var(--soft)] px-3 py-1 text-xs font-bold text-[var(--accent-dark)]">Immutable history</span></div><form onSubmit={submit} className="mt-5 grid gap-4 sm:grid-cols-3"><label className="text-sm font-semibold">Amount<input required min="0.01" step="0.01" value={amount} onChange={(event) => changePayload(() => setAmount(event.target.value))} className="mt-2 w-full rounded-xl border border-[var(--border)] px-3 py-2.5" /></label><label className="text-sm font-semibold">Payment date<input required type="date" value={paymentDate} onChange={(event) => changePayload(() => setPaymentDate(event.target.value))} className="mt-2 w-full rounded-xl border border-[var(--border)] px-3 py-2.5" /></label><label className="text-sm font-semibold">Note<span className="sr-only"> (optional)</span><input maxLength={1000} value={note} onChange={(event) => changePayload(() => setNote(event.target.value))} className="mt-2 w-full rounded-xl border border-[var(--border)] px-3 py-2.5" placeholder="Bank transfer" /></label><div className="sm:col-span-3 flex flex-wrap items-center gap-3"><button disabled={busy} className="rounded-xl bg-[var(--accent)] px-5 py-3 font-bold text-white disabled:opacity-60">{busy ? "Recording…" : attempt ? "Retry settlement" : "Record payment"}</button>{attempt ? <span className="text-sm text-[var(--muted)]">Retry keeps the same idempotency key.</span> : null}</div></form>{error ? <p role="alert" className="mt-4 rounded-xl bg-[#fff0ee] px-4 py-3 text-sm font-semibold text-[var(--danger)]">{error}</p> : null}</section>;
+}
+
+function readErrorBody(body: ErrorBody | null, fallback: string): string {
+  const message = body?.error?.message ?? fallback;
+  const details = Object.entries(body?.error?.details ?? {});
+  return details.length > 0
+    ? `${message} ${details.map(([field, detail]) => `${field}: ${detail}`).join(" · ")}`
+    : message;
 }
 
 function EditOrderForm({ order, onSaved, onCancel }: { order: Order; onSaved: () => void; onCancel: () => void }) {

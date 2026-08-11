@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { DomainError } from "@/domain/errors";
+import { formatMoney } from "@/domain/money";
 import { isSameOrigin } from "@/server/auth/security";
 import { parseOrderStatus, toOrderDto, createOrder } from "@/server/orders/service";
 import { getOrderContext } from "@/server/orders/http";
@@ -96,6 +97,12 @@ export async function GET(request: Request) {
     {
       items: result.orders.map((order) => toOrderDto(order)),
       pagination: { page, limit, total: result.total },
+      summary: {
+        outstanding: formatMoney(result.summary.outstandingCents),
+        overdue: result.summary.overdueCount,
+        partiallyPaid: result.summary.partiallyPaidCount,
+        paid: result.summary.paidCount,
+      },
     },
     { headers: privateHeaders(request) },
   );

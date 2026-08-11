@@ -52,6 +52,8 @@ Payments are immutable historical events. Each payment stores its amount, balanc
 
 `paymentDate` answers “when did the payment take effect?”; `recordedAt` answers “when did the system record it?”; `sequence` answers “in what order did the aggregate change?” Balances follow sequence, not payment date.
 
+Business dates are calendar dates interpreted in UTC. The server compares due dates and payment dates using `YYYY-MM-DD` values; timestamps such as `recordedAt` remain UTC instants and are formatted by the browser for display.
+
 The aggregate lifecycle is intentionally narrow:
 
 ```text
@@ -188,7 +190,7 @@ Sessions use an HTTP-only, SameSite cookie. The cookie is secure in production, 
 | Method | Endpoint | Result |
 | --- | --- | --- |
 | `POST` | `/api/orders` | Creates an order; totals are recalculated on the server |
-| `GET` | `/api/orders?status=&page=&limit=` | Lists only the current user’s orders |
+| `GET` | `/api/orders?status=&page=&limit=` | Lists only the current user’s orders, plus pagination and a summary over the full filtered result set |
 | `GET` | `/api/orders/:orderId` | Returns one tenant-owned order projection |
 | `PATCH` | `/api/orders/:orderId` | Optimistic edit using the required `version` |
 | `DELETE` | `/api/orders/:orderId?version=N` | Deletes only an unpaid order at the expected version |
@@ -267,22 +269,76 @@ E2E_BASE_URL="https://your-deployment.example" npm run test:e2e
 
 For a manual local golden flow, sign up, sign out, sign in again, create a `$1,000.00` order, record `$400.00`, record `$600.00`, refresh the order, and inspect payment history. Then retry the first payment with the same idempotency key and submit an extra `$1.00`. The expected results are one replayed payment, a paid order, sequence-ordered history, and a `409` overpayment response containing `maximumAllowed: "0.00"`.
 
-The CI workflow is configured to run lint, typecheck, unit tests, replica-set integration tests, production build, and Docker build. See [.github/workflows/ci.yml](./.github/workflows/ci.yml).
+The CI workflow is configured to run lint, typecheck, unit tests, replica-set integration tests, the Playwright browser smoke test, production build, and an ARM64 Docker build. See [.github/workflows/ci.yml](./.github/workflows/ci.yml).
 
-## Deployment status and next steps
+## Deployment
 
-The production image is built by the repository’s [Dockerfile](./Dockerfile) as a non-root `nextjs` user and is ready for ECR/ECS Express Mode. AWS no longer accepts new App Runner customers; the supported AWS container target is [ECS Express Mode](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/express-service-overview.html). The deployment sequence is:
+The production image is built by the repository’s [Dockerfile](./Dockerfile) as a non-root `nextjs` user and is deployed as an immutable ARM64 image. AWS no longer accepts new App Runner customers; the supported AWS container target is [ECS Express Mode](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/express-service-overview.html).
+
+Every push to `main` runs the quality gate. When it succeeds, GitHub Actions builds `linux/arm64`, pushes an image tagged with the commit SHA to ECR, resolves its digest, updates the existing ECS Express Mode service while preserving its current environment and secret configuration, and runs the liveness/readiness smoke check. Pull requests run verification only.
+
+Configure these GitHub repository variables once:
+
+| Variable | Value |
+| --- | --- |
+| `AWS_REGION` | `ap-south-1` |
+| `AWS_ROLE_TO_ASSUME` | ARN of an AWS OIDC deployment role |
+| `ECR_REPOSITORY` | `crossval-orders` |
+| `ECS_SERVICE_ARN` | ARN of the Express service, for example `arn:aws:ecs:ap-south-1:ACCOUNT:service/default/crossval-orders` |
+| `DEPLOY_BASE_URL` | Public HTTPS endpoint used by `npm run deploy:smoke` |
+
+The deployment role trusts only the repository’s `main` branch through the GitHub Actions OIDC provider. Its least-privilege policy needs ECR push permissions for this repository plus `ecs:DescribeExpressGatewayService` and `ecs:UpdateExpressGatewayService` for this service ARN. The role does not receive Atlas credentials, schema-admin privileges, or a long-lived AWS access key. The ECS task keeps `MONGODB_URI` in Secrets Manager; GitHub never receives the secret value.
+
+Use this trust policy on the role (replace `ACCOUNT_ID` if the role is in another account):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com" },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
+      "StringLike": { "token.actions.githubusercontent.com:sub": "repo:brinal8055/crossval-order-and-settlement:ref:refs/heads/main" }
+    }
+  }]
+}
+```
+
+Attach a policy scoped to the ECR repository and ECS service (replace `ACCOUNT_ID`):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*" },
+    {
+      "Effect": "Allow",
+      "Action": ["ecr:BatchCheckLayerAvailability", "ecr:CompleteLayerUpload", "ecr:DescribeImages", "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"],
+      "Resource": "arn:aws:ecr:ap-south-1:ACCOUNT_ID:repository/crossval-orders"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ecs:DescribeExpressGatewayService", "ecs:UpdateExpressGatewayService"],
+      "Resource": "arn:aws:ecs:ap-south-1:ACCOUNT_ID:service/default/crossval-orders"
+    }
+  ]
+}
+```
+
+The one-time infrastructure setup remains:
 
 1. Run the quality gates above.
 2. Run `npm run db:init` with the Atlas migration credential.
-3. Push an immutable image tag or digest to ECR.
-4. Create an ECS Express Mode service from the ECR image with container port `3000` and `/api/health/ready`.
-5. Inject `MONGODB_URI`, `MONGODB_DATABASE`, `SESSION_TTL_SECONDS`, and the exact HTTPS `APP_ORIGIN`.
-6. Keep `MONGODB_MIGRATION_URI` out of the ECS task.
-7. Run `BASE_URL="https://your-domain" npm run deploy:smoke`.
+3. Create the ECS Express Mode service from the initial ECR image with container port `3000` and `/api/health/ready`.
+4. Inject `MONGODB_URI`, `MONGODB_DATABASE`, `SESSION_TTL_SECONDS`, and the exact HTTPS `APP_ORIGIN`.
+5. Keep `MONGODB_MIGRATION_URI` out of the ECS task.
+6. Add the GitHub variables above and create the OIDC deployment role.
+7. Push to `main`; the workflow performs subsequent image updates automatically.
 8. Complete the authenticated golden flow: signup, logout, login, `$1,000` order, `$400` payment, `$600` payment, replay, and `$1` overpayment rejection.
 
-The deployed service is available at [the live demo URL](https://cr-fdc41e1a09224299a06a80d64823344c.ecs.ap-south-1.on.aws/orders). Keep the runtime `MONGODB_URI` in Secrets Manager, keep the migration credential out of the task, and record each pushed image digest so a deployment can be rolled back.
+The deployed service is available at [the live demo URL](https://cr-fdc41e1a09224299a06a80d64823344c.ecs.ap-south-1.on.aws/orders). Keep the runtime `MONGODB_URI` in Secrets Manager, keep the migration credential out of the task, and use the commit-SHA image digest shown in the Actions log for rollback.
 
 ECS Express Mode has no additional Express Mode service fee, but AWS bills the underlying Fargate compute, Application Load Balancer, CloudWatch logs/metrics, and data transfer. A no-cost demo can instead use a Docker-capable free web service such as Render with the same Atlas runtime variables. That option is intentionally demo-only: free services spin down when idle, have monthly usage limits, and do not provide production durability. ([ECS Express Mode pricing](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/express-service-overview.html), [AWS App Runner availability change](https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html))
 

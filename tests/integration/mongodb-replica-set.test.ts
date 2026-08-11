@@ -443,7 +443,9 @@ describe("local MongoDB", () => {
       }),
     );
     expect(listResponse.status).toBe(200);
-    expect((await listResponse.json()).pagination).toMatchObject({ page: 1, limit: 1, total: 1 });
+    const listBody = await listResponse.json();
+    expect(listBody.pagination).toMatchObject({ page: 1, limit: 1, total: 1 });
+    expect(listBody.summary).toEqual({ outstanding: "1025.50", overdue: 0, partiallyPaid: 0, paid: 0 });
 
     const updateResponse = await patchOrderRoute(
       new Request(`http://localhost:3000/api/orders/${orderId}`, {
