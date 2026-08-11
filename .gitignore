@@ -19,8 +19,6 @@
 
 # internal design and delivery notes
 /docs/
-/playwright-report/
-/test-results/
 
 # logs
 *.log

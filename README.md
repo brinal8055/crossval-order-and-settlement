@@ -160,7 +160,7 @@ The dependency direction is intentional: domain rules do not import MongoDB or N
 
 ## HTTP API
 
-All authenticated responses use private, no-store caching and include an `X-Request-Id`. Errors use this envelope:
+API responses use private, no-store caching and include an `X-Request-Id`. Errors use this envelope:
 
 ```json
 {
@@ -234,7 +234,7 @@ The client keeps the same key and normalized payload when it offers a retry afte
 - Global security headers include `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and a restrictive `Permissions-Policy`.
 - Authenticated responses are `private, no-store`.
 - Request IDs are returned in responses and error envelopes.
-- A Pino logger module defines redaction for passwords, hashes, tokens, cookies, authorization headers, and payment notes. Distributed rate limiting remains an edge/WAF responsibility rather than an in-process counter.
+- Distributed rate limiting remains an edge/WAF responsibility rather than an in-process counter.
 
 The security model is deliberately enforced at multiple boundaries. Domain code rejects invalid money and dates; route handlers validate request shape and origin; repositories scope reads and writes by user ID; MongoDB validators reject malformed documents; unique indexes arbitrate duplicate identities, idempotency keys, and payment sequences; and transaction predicates protect the remaining balance. These controls are complementary rather than substitutes for one another.
 
@@ -287,56 +287,11 @@ Configure these GitHub repository variables once:
 | `ECS_SERVICE_ARN` | ARN of the Express service, for example `arn:aws:ecs:ap-south-1:ACCOUNT:service/default/crossval-orders` |
 | `DEPLOY_BASE_URL` | Public HTTPS endpoint used by `npm run deploy:smoke` |
 
-The deployment role trusts only the repository’s `main` branch through the GitHub Actions OIDC provider. Its least-privilege policy needs ECR push permissions for this repository plus `ecs:DescribeExpressGatewayService` and `ecs:UpdateExpressGatewayService` for this service ARN. The role does not receive Atlas credentials, schema-admin privileges, or a long-lived AWS access key. The ECS task keeps `MONGODB_URI` in Secrets Manager; GitHub never receives the secret value.
+The deployment role trusts only this repository’s `main` branch through GitHub OIDC. Scope it to ECR push actions for `crossval-orders` and `ecs:DescribeExpressGatewayService`/`ecs:UpdateExpressGatewayService` for the Express service. It does not receive Atlas credentials, schema-admin privileges, or a long-lived AWS access key. The ECS task keeps `MONGODB_URI` in Secrets Manager; GitHub never receives the secret value.
 
-Use this trust policy on the role (replace `ACCOUNT_ID` if the role is in another account):
+The one-time deployment setup is to initialize Atlas with `npm run db:init`, create the ECS Express Mode service on port `3000` with `/api/health/ready`, inject the runtime variables, create the OIDC role, and add the GitHub variables above. Subsequent pushes to `main` perform image updates automatically.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": { "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com" },
-    "Action": "sts:AssumeRoleWithWebIdentity",
-    "Condition": {
-      "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-      "StringLike": { "token.actions.githubusercontent.com:sub": "repo:brinal8055/crossval-order-and-settlement:ref:refs/heads/main" }
-    }
-  }]
-}
-```
-
-Attach a policy scoped to the ECR repository and ECS service (replace `ACCOUNT_ID`):
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    { "Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*" },
-    {
-      "Effect": "Allow",
-      "Action": ["ecr:BatchCheckLayerAvailability", "ecr:CompleteLayerUpload", "ecr:DescribeImages", "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"],
-      "Resource": "arn:aws:ecr:ap-south-1:ACCOUNT_ID:repository/crossval-orders"
-    },
-    {
-      "Effect": "Allow",
-      "Action": ["ecs:DescribeExpressGatewayService", "ecs:UpdateExpressGatewayService"],
-      "Resource": "arn:aws:ecs:ap-south-1:ACCOUNT_ID:service/default/crossval-orders"
-    }
-  ]
-}
-```
-
-The one-time infrastructure setup remains:
-
-1. Run the quality gates above.
-2. Run `npm run db:init` with the Atlas migration credential.
-3. Create the ECS Express Mode service from the initial ECR image with container port `3000` and `/api/health/ready`.
-4. Inject `MONGODB_URI`, `MONGODB_DATABASE`, `SESSION_TTL_SECONDS`, and the exact HTTPS `APP_ORIGIN`.
-5. Keep `MONGODB_MIGRATION_URI` out of the ECS task.
-6. Add the GitHub variables above and create the OIDC deployment role.
-7. Push to `main`; the workflow performs subsequent image updates automatically.
-8. Complete the authenticated golden flow: signup, logout, login, `$1,000` order, `$400` payment, `$600` payment, replay, and `$1` overpayment rejection.
+After the first deployment, verify the authenticated golden flow: signup, logout, login, `$1,000` order, `$400` payment, `$600` payment, idempotent replay, and `$1` overpayment rejection.
 
 The deployed service is available at [the live demo URL](https://cr-fdc41e1a09224299a06a80d64823344c.ecs.ap-south-1.on.aws/orders). Keep the runtime `MONGODB_URI` in Secrets Manager, keep the migration credential out of the task, and use the commit-SHA image digest shown in the Actions log for rollback.
 
