@@ -293,18 +293,6 @@ The one-time deployment setup is to initialize Atlas with `npm run db:init`, cre
 
 After the first deployment, verify the authenticated golden flow: signup, logout, login, `$1,000` order, `$400` payment, `$600` payment, idempotent replay, and `$1` overpayment rejection.
 
-The deployed service is available at [the live demo URL](https://cr-fdc41e1a09224299a06a80d64823344c.ecs.ap-south-1.on.aws/orders). Keep the runtime `MONGODB_URI` in Secrets Manager, keep the migration credential out of the task, and use the commit-SHA image digest shown in the Actions log for rollback.
+The deployed service is available at [the live demo URL](https://cr-fdc41e1a09224299a06a80d64823344c.ecs.ap-south-1.on.aws/). Keep the runtime `MONGODB_URI` in Secrets Manager, keep the migration credential out of the task, and use the commit-SHA image digest shown in the Actions log for rollback.
 
 ECS Express Mode has no additional Express Mode service fee, but AWS bills the underlying Fargate compute, Application Load Balancer, CloudWatch logs/metrics, and data transfer. A no-cost demo can instead use a Docker-capable free web service such as Render with the same Atlas runtime variables. That option is intentionally demo-only: free services spin down when idle, have monthly usage limits, and do not provide production durability. ([ECS Express Mode pricing](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/express-service-overview.html), [AWS App Runner availability change](https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html))
-
-## Tradeoffs and non-goals
-
-- MongoDB is used intentionally for document-shaped order data, transaction support, validators, indexes, and BSON `Long` persistence.
-- Payment-provider integration, refunds, chargebacks, recurring billing, double-entry accounting, and external webhooks are out of scope.
-- Audit-event storage and independent production reconciliation are documented follow-ups, not implemented features.
-- The client may show a non-authoritative order total preview; the server always recalculates and validates totals before persistence.
-- The README is intentionally concise; internal design notes are kept out of the shared repository.
-
-## Production improvements
-
-Before treating this as a long-lived financial product, add private Atlas connectivity or controlled egress, edge/WAF rate limiting, centralized structured logs and alerts, backups and restore drills, independent reconciliation, deployment promotion/rollback automation, and an external audit trail. None of these should weaken the current persistence invariant or make payment history mutable.
