@@ -5,7 +5,9 @@ import { ObjectId } from "mongodb";
 import { assertValidBusinessDate } from "@/domain/dates";
 import { DomainError } from "@/domain/errors";
 import { assertMoneyWithinLimit, formatMoney, parseMoney } from "@/domain/money";
+import { deriveOrderStatus } from "@/domain/order-status";
 import type { PaymentDocument } from "@/server/db/documents";
+import { AuditRepository } from "@/server/db/repositories/audit-repository";
 import { OrderRepository } from "@/server/db/repositories/order-repository";
 import { PaymentRepository } from "@/server/db/repositories/payment-repository";
 
@@ -18,6 +20,7 @@ export interface PaymentInput {
 export interface SettlementRepositories {
   orders: OrderRepository;
   payments: PaymentRepository;
+  audit: AuditRepository;
 }
 
 export type SettlementFailureCode =
@@ -155,6 +158,31 @@ export async function settlePayment(
             recordedAt,
           };
           await repositories.payments.insert(payment, session);
+          await repositories.audit.insert({
+            _id: new ObjectId(),
+            userId,
+            orderId,
+            action: "PAYMENT_RECORDED",
+            details: {
+              amount: formatMoney(payment.amountCents),
+              paymentDate: payment.paymentDate,
+              balanceBefore: formatMoney(payment.balanceBeforeCents),
+              balanceAfter: formatMoney(payment.balanceAfterCents),
+              statusBefore: deriveOrderStatus(
+                previousOrder.totalCents,
+                previousOrder.amountDueCents,
+                previousOrder.dueDate,
+                today,
+              ),
+              statusAfter: deriveOrderStatus(
+                previousOrder.totalCents,
+                payment.balanceAfterCents,
+                previousOrder.dueDate,
+                today,
+              ),
+            },
+            occurredAt: recordedAt,
+          }, session);
           return { payment, replayed: false };
         },
         {

@@ -2,7 +2,7 @@ import type { Db, IndexDescription } from "mongodb";
 
 import { collectionValidators } from "./validators";
 
-const collectionNames = ["users", "sessions", "orders", "payments"] as const;
+const collectionNames = ["users", "sessions", "orders", "payments", "auditEvents", "refunds"] as const;
 
 const indexes: Record<(typeof collectionNames)[number], IndexDescription[]> = {
   users: [{ key: { emailNormalized: 1 }, unique: true }],
@@ -17,6 +17,14 @@ const indexes: Record<(typeof collectionNames)[number], IndexDescription[]> = {
     { key: { userId: 1, dueDate: 1 } },
   ],
   payments: [
+    { key: { userId: 1, idempotencyKey: 1 }, unique: true },
+    { key: { userId: 1, orderId: 1, sequence: -1 } },
+    { key: { userId: 1, orderId: 1, sequence: 1 }, unique: true },
+  ],
+  auditEvents: [
+    { key: { userId: 1, orderId: 1, occurredAt: -1 } },
+  ],
+  refunds: [
     { key: { userId: 1, idempotencyKey: 1 }, unique: true },
     { key: { userId: 1, orderId: 1, sequence: -1 } },
     { key: { userId: 1, orderId: 1, sequence: 1 }, unique: true },
@@ -45,4 +53,3 @@ export async function initializeDatabase(db: Db): Promise<void> {
     await db.collection(name).createIndexes(indexes[name]);
   }
 }
-

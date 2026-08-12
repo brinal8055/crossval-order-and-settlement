@@ -112,6 +112,7 @@ export async function createOrder(
     totalCents: normalized.totalCents,
     amountDueCents: normalized.totalCents,
     paymentCount: 0,
+    refundCount: 0,
     version: 1,
     createdAt: now,
     updatedAt: now,

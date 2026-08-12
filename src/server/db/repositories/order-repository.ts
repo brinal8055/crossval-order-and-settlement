@@ -20,6 +20,12 @@ export interface OrderListSummary {
   paidCount: number;
 }
 
+export interface OrderExportFilter {
+  userId: ObjectId;
+  from: Date;
+  toExclusive: Date;
+}
+
 export interface OrderPatch {
   customer?: string;
   dueDate?: string;
@@ -138,6 +144,17 @@ export class OrderRepository {
     };
   }
 
+  exportForUser(filter: OrderExportFilter): Promise<OrderDocument[]> {
+    return this.collection
+      .find({
+        userId: filter.userId,
+        createdAt: { $gte: filter.from, $lt: filter.toExclusive },
+      })
+      .sort({ createdAt: 1, _id: 1 })
+      .toArray()
+      .then((documents) => documents.map(mapOrderDocument));
+  }
+
   async updateBeforePayment(
     orderId: ObjectId,
     userId: ObjectId,
@@ -197,6 +214,33 @@ export class OrderRepository {
       { _id: orderId, userId, amountDueCents: { $gte: amountCents } },
       {
         $inc: { amountDueCents: -amountCents, paymentCount: 1, version: 1 },
+        $set: { updatedAt },
+      },
+      { returnDocument: "before", session },
+    );
+    return document ? mapOrderDocument(document) : null;
+  }
+
+  async refund(
+    orderId: ObjectId,
+    userId: ObjectId,
+    amountCents: bigint,
+    updatedAt: Date,
+    session: ClientSession,
+  ): Promise<OrderDocument | null> {
+    const document = await this.collection.findOneAndUpdate(
+      {
+        _id: orderId,
+        userId,
+        $expr: {
+          $gte: [
+            { $subtract: ["$totalCents", "$amountDueCents"] },
+            amountCents,
+          ],
+        },
+      },
+      {
+        $inc: { amountDueCents: amountCents, refundCount: 1, version: 1 },
         $set: { updatedAt },
       },
       { returnDocument: "before", session },

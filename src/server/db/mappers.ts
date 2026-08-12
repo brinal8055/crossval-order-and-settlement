@@ -1,6 +1,7 @@
 import type {
   OrderDocument,
   PaymentDocument,
+  RefundDocument,
   SessionDocument,
   UserDocument,
 } from "./documents";
@@ -44,6 +45,15 @@ export function mapPaymentDocument(document: PaymentDocument): PaymentDocument {
   };
 }
 
+export function mapRefundDocument(document: RefundDocument): RefundDocument {
+  return {
+    ...document,
+    amountCents: fromBsonMoney(document.amountCents, "amountCents"),
+    balanceBeforeCents: fromBsonMoney(document.balanceBeforeCents, "balanceBeforeCents"),
+    balanceAfterCents: fromBsonMoney(document.balanceAfterCents, "balanceAfterCents"),
+  };
+}
+
 export function mapOrderForPersistence(document: OrderDocument): OrderDocument {
   return {
     ...document,
@@ -67,3 +77,11 @@ export function mapPaymentForPersistence(
   };
 }
 
+export function mapRefundForPersistence(document: RefundDocument): RefundDocument {
+  return {
+    ...document,
+    amountCents: toBsonMoney(document.amountCents),
+    balanceBeforeCents: toBsonMoney(document.balanceBeforeCents),
+    balanceAfterCents: toBsonMoney(document.balanceAfterCents),
+  };
+}

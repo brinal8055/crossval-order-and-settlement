@@ -46,6 +46,49 @@ function StatusBadge({ status }: { status: Status }) {
   return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${statusStyles[status]}`}>{statusLabels[status]}</span>;
 }
 
+function ExportOrdersPanel() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [from, setFrom] = useState(() => `${today.slice(0, 8)}01`);
+  const [to, setTo] = useState(today);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function exportOrders(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/orders/export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { credentials: "include" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as ErrorBody | null;
+        setError(formatError(body, "The export could not be generated."));
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `orders-${from}-to-${to}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Connection failed. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-sm">
+    <div><h2 className="text-lg font-semibold">Export orders</h2><p className="mt-1 text-sm text-[var(--muted)]">Download your tenant-scoped orders created in a date range.</p></div>
+    <form onSubmit={exportOrders} className="mt-4 flex flex-wrap items-end gap-3">
+      <label className="text-sm font-semibold">From<input required type="date" value={from} onChange={(event) => setFrom(event.target.value)} className="mt-2 rounded-xl border border-[var(--border)] px-3 py-2.5" /></label>
+      <label className="text-sm font-semibold">To<input required type="date" value={to} onChange={(event) => setTo(event.target.value)} className="mt-2 rounded-xl border border-[var(--border)] px-3 py-2.5" /></label>
+      <button disabled={busy} className="rounded-xl border border-[var(--border)] px-5 py-2.5 font-bold disabled:opacity-60">{busy ? "Preparing…" : "Download CSV"}</button>
+    </form>
+    {error ? <p role="alert" className="mt-3 rounded-xl bg-[#fff0ee] px-4 py-3 text-sm font-semibold text-[var(--danger)]">{error}</p> : null}
+  </section>;
+}
+
 function CreateOrderPanel({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false);
   const [customer, setCustomer] = useState("");
@@ -120,7 +163,7 @@ export default function OrdersDashboard() {
 
   return <main className="mx-auto min-h-screen max-w-7xl px-5 py-6 sm:px-8 sm:py-10">
     <header className="flex flex-wrap items-center justify-between gap-4"><div><Link href="/" className="text-sm font-bold uppercase tracking-[0.18em] text-[var(--accent)]">CrossVal</Link><h1 className="mt-3 text-4xl font-semibold tracking-tight">Orders &amp; settlements</h1><p className="mt-2 text-[var(--muted)]">A clear view of what is owed, paid, and next.</p></div><div className="flex items-center gap-3"><span className="hidden text-sm text-[var(--muted)] sm:inline">{userEmail}</span><button onClick={logout} className="rounded-full border border-[var(--border)] px-4 py-2 text-sm font-semibold hover:bg-[var(--surface)]">Sign out</button></div></header>
-    <div className="mt-9"><CreateOrderPanel onCreated={() => void loadOrders()} /></div>
+    <div className="mt-9 space-y-4"><CreateOrderPanel onCreated={() => void loadOrders()} /><ExportOrdersPanel /></div>
     <section aria-label="Order summary" className="mt-7 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><div className="rounded-2xl bg-[var(--accent)] p-5 text-white"><p className="text-sm font-semibold text-white/75">Filtered outstanding</p><p className="mt-3 text-3xl font-semibold">${summary.outstanding}</p></div><div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><p className="text-sm font-semibold text-[var(--muted)]">Filtered overdue</p><p className="mt-3 text-3xl font-semibold">{summary.overdue}</p></div><div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><p className="text-sm font-semibold text-[var(--muted)]">Filtered partially paid</p><p className="mt-3 text-3xl font-semibold">{summary.partiallyPaid}</p></div><div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><p className="text-sm font-semibold text-[var(--muted)]">Filtered paid</p><p className="mt-3 text-3xl font-semibold">{summary.paid}</p></div></section>
     <section className="mt-10 rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--border)] px-5 py-4"><div><h2 className="text-lg font-semibold">Your orders</h2><p className="mt-1 text-xs text-[var(--muted)]">Summary cards cover all orders matching the current filter.</p></div><div role="group" aria-label="Filter orders" className="flex flex-wrap gap-2">{(["all", "pending", "partially_paid", "paid", "overdue"] as const).map((value) => <button key={value} onClick={() => { setFilter(value); setPage(1); }} aria-pressed={filter === value} className={`rounded-full px-3 py-1.5 text-xs font-bold ${filter === value ? "bg-[var(--accent)] text-white" : "bg-[var(--soft)] text-[var(--muted)]"}`}>{value === "all" ? "All" : statusLabels[value]}</button>)}</div></div>{error ? <div role="alert" className="m-5 rounded-xl bg-[#fff0ee] px-4 py-3 text-sm font-semibold text-[var(--danger)]">{error} <button onClick={() => void loadOrders()} className="ml-2 underline">Retry</button></div> : loading ? <p className="px-5 py-12 text-center text-[var(--muted)]">Loading orders…</p> : orders.length === 0 ? <div className="px-5 py-14 text-center"><p className="text-lg font-semibold">No orders in this view</p><p className="mt-2 text-sm text-[var(--muted)]">Create an order to start tracking a settlement.</p></div> : <><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="bg-[#f8faf9] text-xs uppercase tracking-[0.12em] text-[var(--muted)]"><tr><th className="px-5 py-4 font-bold">Customer</th><th className="px-5 py-4 font-bold">Status</th><th className="px-5 py-4 font-bold">Total</th><th className="px-5 py-4 font-bold">Paid</th><th className="px-5 py-4 font-bold">Due</th><th className="px-5 py-4 font-bold">Due date</th></tr></thead><tbody>{orders.map((order) => <tr key={order.id} className="border-t border-[var(--border)] transition hover:bg-[#fbfdfc]"><td className="px-5 py-4"><Link href={`/orders/${order.id}`} className="font-semibold text-[var(--accent)] hover:underline">{order.customer}</Link></td><td className="px-5 py-4"><StatusBadge status={order.status} /></td><td className="px-5 py-4">${order.total}</td><td className="px-5 py-4">${order.amountPaid}</td><td className="px-5 py-4 font-semibold">${order.amountDue}</td><td className="px-5 py-4 text-[var(--muted)]">{order.dueDate}</td></tr>)}</tbody></table></div><div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] px-5 py-4"><p className="text-sm text-[var(--muted)]">Showing page {pagination.page} of {totalPages} · {pagination.total} total orders</p><div className="flex gap-2"><button disabled={page === 1 || loading} onClick={() => setPage((current) => current - 1)} className="rounded-full border border-[var(--border)] px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40">Previous</button><button disabled={page >= totalPages || loading} onClick={() => setPage((current) => current + 1)} className="rounded-full border border-[var(--border)] px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40">Next</button></div></div></>}</section>
   </main>;

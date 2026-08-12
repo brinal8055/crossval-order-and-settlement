@@ -23,6 +23,9 @@ import {
   GET as getPaymentsRoute,
   POST as createPaymentPost,
 } from "@/app/api/orders/[orderId]/payments/route";
+import { GET as getRefundsRoute, POST as createRefundPost } from "@/app/api/orders/[orderId]/refunds/route";
+import { GET as getAuditRoute } from "@/app/api/orders/[orderId]/audit/route";
+import { GET as exportOrdersRoute } from "@/app/api/orders/export/route";
 import { hashSessionToken } from "@/server/auth/session";
 import { GET as healthLiveGet } from "@/app/api/health/live/route";
 import { GET as healthReadyGet } from "@/app/api/health/ready/route";
@@ -92,7 +95,7 @@ describe("local MongoDB", () => {
       .toArray();
     const names = collectionNames.map(({ name }) => name);
 
-    expect(names).toEqual(expect.arrayContaining(["users", "sessions", "orders", "payments"]));
+    expect(names).toEqual(expect.arrayContaining(["users", "sessions", "orders", "payments", "refunds", "auditEvents"]));
     expect((await db.collection("users").indexes()).some((index) => index.unique)).toBe(
       true,
     );
@@ -666,6 +669,56 @@ describe("local MongoDB", () => {
     expect(order?.paymentCount).toBe(1);
   });
 
+  it("supports tenant-safe CSV export, immutable audit events, and idempotent refunds", async () => {
+    const token = await signupAndGetToken("stretch-goals");
+    const orderId = await createOrderForToken(token, "Stretch Customer");
+    const payment = await submitPayment(token, orderId, "550e8400-e29b-41d4-a716-446655440060", "1000.00");
+    expect(payment.status).toBe(201);
+
+    const refundRequest = () => new Request(`http://localhost:3000/api/orders/${orderId}/refunds`, {
+      method: "POST",
+      headers: {
+        cookie: `crossval_session=${token}`,
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+        "idempotency-key": "550e8400-e29b-41d4-a716-446655440061",
+      },
+      body: JSON.stringify({ amount: "400.00", refundDate: "2026-08-12", note: "Customer credit" }),
+    });
+    const refundResponse = await createRefundPost(refundRequest(), { params: Promise.resolve({ orderId }) });
+    expect(refundResponse.status).toBe(201);
+    expect((await refundResponse.json()).refund).toMatchObject({ sequence: 1, amount: "400.00", balanceBefore: "0.00", balanceAfter: "400.00" });
+
+    const refundReplay = await createRefundPost(refundRequest(), { params: Promise.resolve({ orderId }) });
+    expect(refundReplay.status).toBe(200);
+    expect(refundReplay.headers.get("idempotency-replayed")).toBe("true");
+
+    const overrefund = await createRefundPost(new Request(`http://localhost:3000/api/orders/${orderId}/refunds`, {
+      method: "POST",
+      headers: {
+        cookie: `crossval_session=${token}`,
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+        "idempotency-key": "550e8400-e29b-41d4-a716-446655440062",
+      },
+      body: JSON.stringify({ amount: "700.00", refundDate: "2026-08-12" }),
+    }), { params: Promise.resolve({ orderId }) });
+    expect(overrefund.status).toBe(409);
+    expect((await overrefund.json()).error.details.maximumAllowed).toBe("600.00");
+
+    const refunds = await getRefundsRoute(new Request(`http://localhost:3000/api/orders/${orderId}/refunds`, { headers: { cookie: `crossval_session=${token}` } }), { params: Promise.resolve({ orderId }) });
+    expect((await refunds.json()).items.map((item: { sequence: number }) => item.sequence)).toEqual([1]);
+
+    const audit = await getAuditRoute(new Request(`http://localhost:3000/api/orders/${orderId}/audit`, { headers: { cookie: `crossval_session=${token}` } }), { params: Promise.resolve({ orderId }) });
+    expect((await audit.json()).items.map((item: { action: string }) => item.action)).toEqual(["REFUND_RECORDED", "PAYMENT_RECORDED"]);
+
+    const exportResponse = await exportOrdersRoute(new Request("http://localhost:3000/api/orders/export?from=2026-01-01&to=2026-12-31", { headers: { cookie: `crossval_session=${token}` } }));
+    expect(exportResponse.status).toBe(200);
+    expect(exportResponse.headers.get("content-type")).toContain("text/csv");
+    expect(await exportResponse.text()).toContain("Stretch Customer");
+    await assertPersistedInvariants(orderId);
+  });
+
   it("collapses concurrent same-key same-payload requests to one payment", async () => {
     const token = await signupAndGetToken("race-same-key");
     const orderId = await createOrderForToken(token, "Same Key Race");
@@ -846,6 +899,7 @@ async function assertPersistedInvariants(orderId: string): Promise<void> {
   const objectId = new ObjectId(orderId);
   const order = await collections.orders.findOne({ _id: objectId });
   const payments = await collections.payments.find({ orderId: objectId }).sort({ sequence: 1 }).toArray();
+  const refunds = await collections.refunds.find({ orderId: objectId }).sort({ sequence: 1 }).toArray();
 
   if (!order) {
     expect(payments).toHaveLength(0);
@@ -853,11 +907,16 @@ async function assertPersistedInvariants(orderId: string): Promise<void> {
   }
 
   const paymentSum = payments.reduce((sum, payment) => sum + payment.amountCents, 0n);
+  const refundSum = refunds.reduce((sum, refund) => sum + refund.amountCents, 0n);
   expect(order.amountDueCents >= 0n && order.amountDueCents <= order.totalCents).toBe(true);
-  expect(paymentSum).toBe(order.totalCents - order.amountDueCents);
+  expect(paymentSum - refundSum).toBe(order.totalCents - order.amountDueCents);
   expect(order.paymentCount).toBe(payments.length);
   expect(order.paymentCount).toBe(payments.length === 0 ? 0 : payments[payments.length - 1].sequence);
   expect(payments.map((payment) => payment.sequence)).toEqual(
     payments.map((_, index) => index + 1),
+  );
+  expect(order.refundCount ?? 0).toBe(refunds.length);
+  expect(refunds.map((refund) => refund.sequence)).toEqual(
+    refunds.map((_, index) => index + 1),
   );
 }

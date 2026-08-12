@@ -34,6 +34,7 @@ export interface OrderDocument {
   totalCents: bigint;
   amountDueCents: bigint;
   paymentCount: number;
+  refundCount?: number;
   version: number;
   createdAt: Date;
   updatedAt: Date;
@@ -54,3 +55,30 @@ export interface PaymentDocument {
   recordedAt: Date;
 }
 
+export type AuditAction =
+  | "PAYMENT_RECORDED"
+  | "REFUND_RECORDED";
+
+export interface AuditEventDocument {
+  _id: ObjectId;
+  userId: ObjectId;
+  orderId: ObjectId;
+  action: AuditAction;
+  details: Record<string, string>;
+  occurredAt: Date;
+}
+
+export interface RefundDocument {
+  _id: ObjectId;
+  userId: ObjectId;
+  orderId: ObjectId;
+  sequence: number;
+  amountCents: bigint;
+  refundDate: string;
+  note?: string;
+  idempotencyKey: string;
+  requestHash: string;
+  balanceBeforeCents: bigint;
+  balanceAfterCents: bigint;
+  recordedAt: Date;
+}

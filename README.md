@@ -1,6 +1,6 @@
 # CrossVal Orders & Settlements
 
-CrossVal is a small, production-minded orders and settlements application. It supports authenticated users, tenant-isolated orders, partial and full payments, immutable payment history, derived order status, and concurrency-safe settlement writes.
+CrossVal is a small, production-minded orders and settlements application. It supports authenticated users, tenant-isolated orders, partial and full payments, immutable payment/refund history, settlement audit events, CSV export, derived order status, and concurrency-safe settlement writes.
 
 The financial rule is simple:
 
@@ -26,7 +26,7 @@ flowchart LR
     Next --> Domain[Domain rules
     bigint money and dates]
     Next --> Mongo[(MongoDB
-    users, sessions, orders, payments)]
+    users, sessions, orders, payments, refunds, auditEvents)]
     Migration[Deployment migration step] --> Mongo
     ECS[AWS ECS Express Mode] --> Next
     Atlas[MongoDB Atlas] -. production MongoDB .-> Mongo
@@ -69,6 +69,15 @@ amountDue = 0
 
 There is no separate persisted `paid` flag, status field, or payment-total counter that can drift from the monetary projection. The persisted `paymentCount` is an aggregate sequencing aid and is checked against the payment history by integration tests.
 
+Refunds are modeled as separate immutable events rather than edits to payments. A refund increases `amountDueCents` by the refunded amount, is allowed only up to the amount actually paid, and uses its own idempotency key namespace and per-order sequence. The net invariant is:
+
+```text
+SUM(payments.amountCents) - SUM(refunds.amountCents)
+  = totalCents - amountDueCents
+```
+
+The order remains read-only after the first payment, including after a full refund. Its displayed status is still derived from the current balance and due date. Audit events for payments and refunds are written in the same transaction as the settlement mutation, so the history cannot claim a change that did not commit.
+
 ### Settlement correctness
 
 Settlement performs the conditional balance decrement and payment insert in one MongoDB transaction:
@@ -108,6 +117,8 @@ Idempotency and concurrency solve different problems:
 | `sessions` | Server-side sessions | hashed token, user ID, expiry; TTL index |
 | `orders` | Current aggregate projection | user ID, lines, total cents, amount due cents, payment count, version |
 | `payments` | Immutable settlement history | user ID, order ID, sequence, amount cents, idempotency key, request hash, balances, dates |
+| `refunds` | Immutable reversal history | user ID, order ID, sequence, amount cents, idempotency key, request hash, balances, dates |
+| `auditEvents` | Settlement audit trail | user ID, order ID, action, balance/status details, occurred-at timestamp |
 
 All user-owned repository queries include the authenticated `userId` predicate. MongoDB validators and unique indexes provide a second persistence boundary in addition to domain validation and service checks.
 
@@ -218,6 +229,17 @@ Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
 
 The client keeps the same key and normalized payload when it offers a retry after a network interruption. The response is an immutable payment DTO; the UI refreshes the order separately to obtain the current projection. This prevents an idempotent command response from being confused with the aggregate’s state at a later time.
 
+### Export, refunds, and audit
+
+| Method | Endpoint | Result |
+| --- | --- | --- |
+| `GET` | `/api/orders/export?from=YYYY-MM-DD&to=YYYY-MM-DD` | Downloads a tenant-scoped CSV of orders created in the inclusive date range |
+| `POST` | `/api/orders/:orderId/refunds` | Creates or replays an idempotent refund; rejects over-refunds with `maximumAllowed` |
+| `GET` | `/api/orders/:orderId/refunds` | Returns immutable refund history newest-first |
+| `GET` | `/api/orders/:orderId/audit` | Returns transactional payment/refund audit events newest-first |
+
+Refund requests require a UUID `Idempotency-Key`, decimal-string `amount`, non-future `refundDate`, and an optional note. A replay returns the original immutable refund with `Idempotency-Replayed: true`; reusing a key with another payload returns `409`. Export verifies authentication and applies the user predicate in the repository, while the history endpoints first verify that the order belongs to the caller so an unknown or cross-tenant order returns `404` rather than an ambiguous empty list.
+
 ### Health
 
 | Endpoint | Meaning |
@@ -259,7 +281,7 @@ npm run db:up
 npm run test:integration
 ```
 
-The tests cover money/date boundaries, validators and BSON `Long` round trips, authentication, tenant isolation, order lifecycle, settlement idempotency, overpayment, sequence ordering, stale edits/deletes, true concurrent races, persisted invariants, health checks, and security headers.
+The tests cover money/date boundaries, validators and BSON `Long` round trips, authentication, tenant isolation, order lifecycle, settlement idempotency, overpayment, refund idempotency and over-refund protection, CSV escaping/export, transactional audit history, sequence ordering, stale edits/deletes, true concurrent races, persisted net-balance invariants, health checks, and security headers.
 
 The Playwright smoke test uses `E2E_BASE_URL` (or `BASE_URL`) to open a running deployment and verify the landing-to-signup browser path without creating data:
 
@@ -267,7 +289,7 @@ The Playwright smoke test uses `E2E_BASE_URL` (or `BASE_URL`) to open a running 
 E2E_BASE_URL="https://your-deployment.example" npm run test:e2e
 ```
 
-For a manual local golden flow, sign up, sign out, sign in again, create a `$1,000.00` order, record `$400.00`, record `$600.00`, refresh the order, and inspect payment history. Then retry the first payment with the same idempotency key and submit an extra `$1.00`. The expected results are one replayed payment, a paid order, sequence-ordered history, and a `409` overpayment response containing `maximumAllowed: "0.00"`.
+For a manual local golden flow, sign up, sign out, sign in again, create a `$1,000.00` order, record `$400.00`, record `$600.00`, refresh the order, and inspect payment history. Then retry the first payment with the same idempotency key and submit an extra `$1.00`. The expected results are one replayed payment, a paid order, sequence-ordered history, and a `409` overpayment response containing `maximumAllowed: "0.00"`. Finally refund `$400.00`, confirm the refund replay is idempotent, verify the order shows `$400.00` due while remaining locked, inspect the audit history, and download a CSV export for the order’s creation date.
 
 The CI workflow is configured to run lint, typecheck, unit tests, replica-set integration tests, the Playwright browser smoke test, production build, and an ARM64 Docker build. See [.github/workflows/ci.yml](./.github/workflows/ci.yml).
 

@@ -68,7 +68,7 @@ export async function POST(request: Request, context: RouteContext) {
       orderId,
       idempotencyKey,
       parsed.data,
-      { orders: auth.orderRepository, payments: auth.paymentRepository },
+      { orders: auth.orderRepository, payments: auth.paymentRepository, audit: auth.auditRepository },
       formatUtcDate(recordedAt),
       recordedAt,
     );
