@@ -287,7 +287,7 @@ Configure these GitHub repository variables once:
 | `ECS_SERVICE_ARN` | ARN of the Express service, for example `arn:aws:ecs:ap-south-1:ACCOUNT:service/default/crossval-orders` |
 | `DEPLOY_BASE_URL` | Public HTTPS endpoint used by `npm run deploy:smoke` |
 
-The deployment role trusts only this repository’s `main` branch through GitHub OIDC. Scope it to ECR push actions for `crossval-orders` and `ecs:DescribeExpressGatewayService`/`ecs:UpdateExpressGatewayService` for the Express service. It does not receive Atlas credentials, schema-admin privileges, or a long-lived AWS access key. The ECS task keeps `MONGODB_URI` in Secrets Manager; GitHub never receives the secret value.
+The deployment role trusts only this repository’s `main` branch through GitHub OIDC. Scope it to ECR push actions for `crossval-orders`, `ecs:DescribeExpressGatewayService`/`ecs:UpdateExpressGatewayService` for the Express service, and the deployment-monitoring reads `ecs:ListServiceDeployments`, `ecs:DescribeServiceDeployments`, and `ecs:DescribeServiceRevisions` for that service’s deployment/revision resources. It does not receive Atlas credentials, schema-admin privileges, or a long-lived AWS access key. The ECS task keeps `MONGODB_URI` in Secrets Manager; GitHub never receives the secret value.
 
 The one-time deployment setup is to initialize Atlas with `npm run db:init`, create the ECS Express Mode service on port `3000` with `/api/health/ready`, inject the runtime variables, create the OIDC role, and add the GitHub variables above. Subsequent pushes to `main` perform image updates automatically.
 
