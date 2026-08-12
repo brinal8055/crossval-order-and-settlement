@@ -293,6 +293,4 @@ The one-time deployment setup is to initialize Atlas with `npm run db:init`, cre
 
 After the first deployment, verify the authenticated golden flow: signup, logout, login, `$1,000` order, `$400` payment, `$600` payment, idempotent replay, and `$1` overpayment rejection.
 
-The deployed service is available at [the live demo URL](https://cr-fdc41e1a09224299a06a80d64823344c.ecs.ap-south-1.on.aws/). Keep the runtime `MONGODB_URI` in Secrets Manager, keep the migration credential out of the task, and use the commit-SHA image digest shown in the Actions log for rollback.
-
-ECS Express Mode has no additional Express Mode service fee, but AWS bills the underlying Fargate compute, Application Load Balancer, CloudWatch logs/metrics, and data transfer. A no-cost demo can instead use a Docker-capable free web service such as Render with the same Atlas runtime variables. That option is intentionally demo-only: free services spin down when idle, have monthly usage limits, and do not provide production durability. ([ECS Express Mode pricing](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/express-service-overview.html), [AWS App Runner availability change](https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html))
+The deployed service is available at [the live demo URL](https://cr-fdc41e1a09224299a06a80d64823344c.ecs.ap-south-1.on.aws/). 
