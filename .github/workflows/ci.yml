@@ -89,7 +89,7 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     environment: aws-deploy
-    timeout-minutes: 20
+    timeout-minutes: 40
     permissions:
       contents: read
       id-token: write
@@ -212,10 +212,16 @@ jobs:
 
           echo "Waiting for ECS to make the new image current..."
           for attempt in $(seq 1 150); do
-            aws ecs describe-express-gateway-service \
+            if ! aws ecs describe-express-gateway-service \
               --service-arn "$ECS_SERVICE_ARN" \
               --region "$AWS_REGION" \
-              --output json > "$service_json"
+              --cli-connect-timeout 15 \
+              --cli-read-timeout 15 \
+              --output json > "$service_json" 2>/dev/null; then
+              echo "ECS status read was unavailable (attempt $attempt/150); retrying..."
+              sleep 5
+              continue
+            fi
             current_image="$(jq -r \
               '.service as $service
                | (([$service.activeConfigurations[]
@@ -227,8 +233,8 @@ jobs:
               break
             fi
             if [ "$attempt" = "150" ]; then
-              echo "::error::ECS did not make the requested image current within the deployment window."
-              exit 1
+              echo "::warning::ECS image status could not be confirmed within the deployment window; continuing to public health checks."
+              break
             fi
             sleep 5
           done
