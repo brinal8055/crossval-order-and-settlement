@@ -3,17 +3,18 @@ set -eu
 
 base_url="${BASE_URL:?Set BASE_URL to the deployed HTTPS URL.}"
 
-live_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "$base_url/api/health/live")"
-ready_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "$base_url/api/health/ready")"
+for attempt in $(seq 1 30); do
+  live_status="$(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' "$base_url/api/health/live" || true)"
+  ready_status="$(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' "$base_url/api/health/ready" || true)"
 
-if [ "$live_status" != "200" ]; then
-  echo "Liveness check failed with HTTP $live_status" >&2
-  exit 1
-fi
+  if [ "$live_status" = "200" ] && [ "$ready_status" = "200" ]; then
+    echo "Deployment health checks passed for $base_url"
+    exit 0
+  fi
 
-if [ "$ready_status" != "200" ]; then
-  echo "Readiness check failed with HTTP $ready_status" >&2
-  exit 1
-fi
+  echo "Waiting for deployment health (attempt $attempt/30; live=$live_status ready=$ready_status)..."
+  sleep 10
+done
 
-echo "Deployment health checks passed for $base_url"
+echo "Deployment health checks failed after 5 minutes (live=$live_status ready=$ready_status)." >&2
+exit 1
