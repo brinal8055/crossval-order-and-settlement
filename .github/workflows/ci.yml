@@ -138,23 +138,45 @@ jobs:
         run: |
           set -euo pipefail
           image_tag="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-          docker buildx build \
-            --platform linux/arm64 \
-            --tag "$image_tag" \
-            --push \
-            .
           image_digest="$(aws ecr describe-images \
             --repository-name "$ECR_REPOSITORY" \
             --image-ids imageTag="$IMAGE_TAG" \
             --query 'imageDetails[0].imageDigest' \
             --output text \
-            --region "$AWS_REGION")"
+            --region "$AWS_REGION" 2>/dev/null || true)"
+
+          if [ -n "$image_digest" ] && [ "$image_digest" != "None" ]; then
+            echo "Reusing existing immutable image tag $IMAGE_TAG ($image_digest)."
+          else
+            if ! docker buildx build \
+              --platform linux/arm64 \
+              --tag "$image_tag" \
+              --push \
+              .; then
+              echo "Build/push failed; checking whether another attempt published the immutable tag."
+              image_digest="$(aws ecr describe-images \
+                --repository-name "$ECR_REPOSITORY" \
+                --image-ids imageTag="$IMAGE_TAG" \
+                --query 'imageDetails[0].imageDigest' \
+                --output text \
+                --region "$AWS_REGION" 2>/dev/null || true)"
+            fi
+          fi
+
           if [ -z "$image_digest" ] || [ "$image_digest" = "None" ]; then
-            echo "::error::The pushed ECR image digest could not be resolved."
+            image_digest="$(aws ecr describe-images \
+              --repository-name "$ECR_REPOSITORY" \
+              --image-ids imageTag="$IMAGE_TAG" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text \
+              --region "$AWS_REGION")"
+          fi
+          if [ -z "$image_digest" ] || [ "$image_digest" = "None" ]; then
+            echo "::error::The immutable ECR image digest could not be resolved."
             exit 1
           fi
           echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY@$image_digest" >> "$GITHUB_OUTPUT"
-          echo "Pushed $ECR_REGISTRY/$ECR_REPOSITORY@$image_digest"
+          echo "Using $ECR_REGISTRY/$ECR_REPOSITORY@$image_digest"
 
       - name: Update ECS Express Mode service
         env:
